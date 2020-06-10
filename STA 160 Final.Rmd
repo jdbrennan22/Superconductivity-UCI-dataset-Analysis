@@ -1,0 +1,187 @@
+---
+title: "STA 160 Final Project"
+author: "Jordan Brennan"
+date: "6/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggcorrplot)
+library(ggplot2)
+library(plotly)
+library(caret)
+library(repr)
+library(kableExtra)
+library(forcats)
+```
+
+```{r, message=FALSE}
+library(readr)
+train <- read_csv("C:/Users/Jordan/Downloads/superconduct/train.csv")
+
+set.seed(100) 
+
+index = sample(1:nrow(train), 0.7*nrow(train)) 
+
+training = train[index,] # Create the training data 
+test = train[-index,] # Create the test data
+
+dim(training)
+dim(test)
+```
+
+```{r}
+pre_proc_val <- preProcess(training[,-82], method = c("center", "scale"))
+
+training[,-82] = predict(pre_proc_val, training[,-82])
+test[,-82] = predict(pre_proc_val, test[,-82])
+```
+
+```{r}
+cor_train <- as.data.frame(cor(training[-82], training$critical_temp, use = "complete.obs"))
+
+features <- names(training[-82])
+
+cor_train <- cor_train %>% arrange(-V1) %>% rename("Correlation" = V1) %>% mutate(features)
+
+cor_train <- cor_train[, c(2,1)]
+
+cor_train <- cor_train %>% filter(Correlation > 0.5 | Correlation < -.5 ) 
+
+cor_table <- kable(cor_train) %>%
+  kable_styling("striped")
+
+new_train <- training %>% select(wtd_std_ThermalConductivity, range_ThermalConductivity, range_atomic_radius, std_ThermalConductivity, wtd_entropy_atomic_mass, wtd_entropy_atomic_radius, range_fie, wtd_std_atomic_radius, number_of_elements, entropy_Valence, wtd_entropy_Valence, wtd_std_fie, entropy_fie, wtd_entropy_FusionHeat, std_atomic_radius, entropy_atomic_radius, entropy_FusionHeat, std_fie, entropy_atomic_mass, wtd_gmean_Density, gmean_Density, gmean_Valence, mean_Valence, wtd_gmean_Valence, wtd_mean_Valence, critical_temp)
+
+cor_train$features <- as.factor(cor_train$features)
+
+cor_train %>% mutate(features = fct_reorder(features, (Correlation))) %>%
+  ggplot(aes(x=features, y = Correlation)) +
+  geom_bar(stat="identity", fill="#f68060", alpha=.6, width=.4) +
+    coord_flip() +
+    xlab("") +
+    ggtitle("Pearson Correlation with Critcal Temperature") +
+    theme_bw()
+```
+
+```{r}
+fit_1 <- lm(log1p(critical_temp) ~ wtd_std_ThermalConductivity + range_ThermalConductivity + range_atomic_radius + std_ThermalConductivity + wtd_entropy_atomic_mass + wtd_entropy_atomic_radius + range_fie + wtd_std_atomic_radius + number_of_elements + entropy_Valence + wtd_entropy_Valence + wtd_std_fie + entropy_fie + wtd_entropy_FusionHeat + std_atomic_radius + entropy_atomic_radius + entropy_FusionHeat + std_fie + entropy_atomic_mass + wtd_gmean_Density + gmean_Density + gmean_Valence + mean_Valence + wtd_gmean_Valence + wtd_mean_Valence, data = new_train)
+
+fit_2 <- lm(critical_temp ~ ., data = train)
+
+summary(fit_1)
+
+plot(fit_1)
+```
+
+
+```{r}
+#Step 1 - create the evaluation metrics function
+
+eval_metrics = function(model, df, predictions, target){
+    resids = df[,target] - predictions
+    resids2 = resids**2
+    N = length(predictions)
+    r2 = as.character(round(summary(model)$r.squared, 2))
+    adj_r2 = as.character(round(summary(model)$adj.r.squared, 2))
+    print(adj_r2) #Adjusted R-squared
+    print(as.character(round(sqrt(sum(resids2)/N), 2))) #RMSE
+}
+
+predictions = predict(fit_1, newdata = training)
+eval_metrics(fit_1, new_train, predictions, target = 'critical_temp')
+
+predictions = predict(fit_1, newdata = test)
+eval_metrics(fit_1, test, predictions, target = 'critical_temp')
+
+predictions = predict(fit_2, newdata = training)
+eval_metrics(fit_2, training, predictions, target = 'critical_temp')
+
+predictions = predict(fit_2, newdata = test)
+eval_metrics(fit_2, test, predictions, target = 'critical_temp')
+```
+
+```{r}
+library(glmnet)
+
+dummies <- dummyVars(critical_temp ~ ., data = training)
+
+train_dummies = predict(dummies, newdata = training)
+
+test_dummies = predict(dummies, newdata = test)
+
+print(dim(train_dummies)); print(dim(test_dummies))
+
+eval_results <- function(true, predicted, df) {
+  SSE <- sum((predicted - true)^2)
+  SST <- sum((true - mean(true))^2)
+  R_square <- 1 - SSE / SST
+  RMSE = sqrt(SSE/nrow(df))
+
+  
+  # Model performance metrics
+data.frame(
+  RMSE = RMSE,
+  Rsquare = R_square
+)
+  
+}
+```
+
+
+```{r}
+x = as.matrix(train_dummies)
+y_train = training$critical_temp
+
+x_test = as.matrix(test_dummies)
+y_test = test$critical_temp
+
+mylambda <- 10^seq(2, -3, by = -.01)
+
+# Setting alpha = 1 implements lasso regression
+lasso_reg <- cv.glmnet(x, y_train, alpha = 1, lambda = mylambda, standardize = TRUE, nfolds = 5)
+
+# Best 
+lambda_best <- lasso_reg$lambda.min 
+lambda_best
+```
+
+
+```{r}
+lasso_model <- glmnet(x, y_train, alpha = 1, lambda = lambda_best, standardize = TRUE)
+
+predictions_train <- predict(lasso_model, s = lambda_best, newx = x)
+eval_results(y_train, predictions_train, training)
+
+predictions_test <- predict(lasso_model, s = lambda_best, newx = x_test)
+eval_results(y_test, predictions_test, test)
+```
+
+
+```{r}
+cv_ridge <- cv.glmnet(x, y_train, alpha = 0, lambda = mylambda)
+opt_lambda <- cv_ridge$lambda.min
+opt_lambda
+
+# Prediction and evaluation on train data
+predict_train <- predict(cv_ridge, s = opt_lambda, newx = x)
+eval_results(y_train, predictions_train, training)
+
+# Prediction and evaluation on test data
+predict_test <- predict(cv_ridge, s = opt_lambda, newx = x_test)
+eval_results(y_test, predict_test, test)
+```
+
+
+
+
+
+
+
+
